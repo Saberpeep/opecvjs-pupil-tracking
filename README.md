@@ -20,4 +20,6 @@ To run this locally, a simple nodejs server has been provided. `cd` in and run `
 This is by no means a professional nor perfect example, and has been created for my own learning experience, and should be regarded as such.
 However I hope this can help others who are looking into a super simple pupil tracking solution.
 
-PS: despite my best efforts, it leaks memory, especially on reload. Though I believe at least some of this is a long running issue with OpenCV.js
+Despite my best efforts, it leaks memory, especially on reload. Though I believe at least some of this is an inherent issue with OpenCV.js
+
+Most of the haarcascades are from the official OpenCV repo, See individual haarcascade files for specific license information.
