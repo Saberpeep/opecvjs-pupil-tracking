@@ -10,6 +10,7 @@ function loadOpenCV() {
     })
 }
 function main(){
+    var PUPIL_DETECTION_METHOD = "contour"; //or "hough";
     var video = document.createElement('video');
     // document.body.append(video); // for debugging webcam feed
     var stream = null;
@@ -34,9 +35,12 @@ function main(){
     var eyesR = new cv.RectVector();
     var eyesL = new cv.RectVector();
     var eye = new cv.Mat();
-    var pupils = new cv.Mat();
+    if (PUPIL_DETECTION_METHOD == "hough")
+        var pupils = new cv.Mat();
+    if (PUPIL_DETECTION_METHOD == "contour")
+        var pupils = new cv.RectVector();
     var eyeCandidate = new cv.Mat();
-    var contours = new cv.MatVector();
+    var pupilContours = new cv.MatVector();
     var hierarchy = new cv.Mat();
     var stabilizeCache = {};
     var mouthClassifier = new cv.CascadeClassifier();
@@ -65,7 +69,7 @@ function main(){
         eye,
         pupils,
         eyeCandidate,
-        contours,
+        pupilContours,
         hierarchy,
         stabilizeCache,
         mouthClassifier,
@@ -135,9 +139,7 @@ function main(){
         
         detectFaces(gray, faces);
         if (faces.size()){
-            var faceRect = faces.get(0);
-            faceRect = stabilizeRect(faceRect, "face0", 5);
-            faces.set(0, faceRect);
+            var faceRect = stabilizeAndSet(faces, "face", 0, 5);
             drawFaces(faces);
             face = gray.roi(faceRect);
             var faceRectR = new cv.Rect(0, 0, faceRect.width / 2, faceRect.height);
@@ -147,9 +149,7 @@ function main(){
             detectEyes(faceR, eyesR);
             detectEyes(faceL, eyesL);
 
-            var eyeRectR = eyesR.get(0);
-            eyeRectR = stabilizeRect(eyeRectR, "eyeR0", 10, faceRectR);
-            eyesR.set(0, eyeRectR);
+            var eyeRectR = stabilizeAndSet(eyesR, "eyeR", 0, 5, faceRectR);
 
             if(eyesR.size()){
                 drawEyes(faceRect, faceRectR, eyesR);
@@ -158,22 +158,38 @@ function main(){
                 }catch(e){
                     console.warn("eyeRect out of range? stabilization error?", e);
                 }finally{
-                    detectPupilsHough(eye, pupils);
-                    var parsedPupils = parseHoughCircles(pupils);
+                    // -- by contours -----------------
+                    if (PUPIL_DETECTION_METHOD == "contour"){
+                        pupils = detectPupilsContours(eye);
+                        stabilizeAndSet(pupils, "pupilR", 0, 10, eyeRectR);
+                        var parsedPupils = rectVToParsedCircles(pupils);
+                    }
+                    // -- by hough circles ----------------
+                    else if (PUPIL_DETECTION_METHOD == "hough"){
+                        detectPupilsHough(eye, pupils);
+                        var parsedPupils = parseHoughCircles(pupils);
+                    }
                     drawPupils(faceRect, faceRectR, eyeRectR, parsedPupils);
                     var pupilR = parsedPupils[0];
                 }
             }
 
-            var eyeRectL = eyesL.get(0);
-            eyeRectL = stabilizeRect(eyeRectL, "eyeL0", 10, faceRectL);
-            eyesL.set(0, eyeRectL);
+            var eyeRectL = stabilizeAndSet(eyesL, "eyeL", 0, 5, faceRectL);
 
             if(eyesL.size()){
                 drawEyes(faceRect, faceRectL, eyesL);
                 eye = faceL.roi(eyeRectL);
-                detectPupilsHough(eye, pupils);
-                var parsedPupils = parseHoughCircles(pupils);
+                // -- by contours -----------------
+                if (PUPIL_DETECTION_METHOD == "contour"){
+                    pupils = detectPupilsContours(eye);
+                    stabilizeAndSet(pupils, "pupilL", 0, 10, eyeRectL);
+                    var parsedPupils = rectVToParsedCircles(pupils);
+                }
+                // -- by hough circles ----------------
+                else if (PUPIL_DETECTION_METHOD == "hough"){
+                    detectPupilsHough(eye, pupils);
+                    var parsedPupils = parseHoughCircles(pupils);
+                }
                 drawPupils(faceRect, faceRectL, eyeRectL, parsedPupils);
                 var pupilL = parsedPupils[0];
             }
@@ -215,7 +231,7 @@ function main(){
         if (!outRectV.size()){
             faceProfileClassifier.detectMultiScale(gray, outRectV, 1.1, 6, 0, new cv.Size(video.width / 3));
         }
-        // if we still didnt find any, flip and try again
+        // if we still didnt find any, flip and try again (faceProfileClassifier only works for one side)
         if (!outRectV.size()){
             cv.flip(gray, faceCandidate, +1);
             faceProfileClassifier.detectMultiScale(faceCandidate, outRectV, 1.1, 6, 0, new cv.Size(video.width / 3));
@@ -274,7 +290,8 @@ function main(){
         //
         // cv.threshold(eyeMat, candidate, 70, 255, cv.THRESH_BINARY); // (more accurate, but only works in good lighting).
         // cv.adaptiveThreshold(eyeMat, candidate, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 71, 20); // (alternate settings)
-        cv.adaptiveThreshold(eyeMat, eyeCandidate, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, 101, 100);
+        // cv.adaptiveThreshold(eyeMat, eyeCandidate, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, 101, 100);
+        cv.adaptiveThreshold(eyeMat, eyeCandidate, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, 71, 100);
         // ------------
         var ksize = new cv.Size(13, 13); // blur amount
         cv.GaussianBlur(eyeCandidate, eyeCandidate, ksize, 0, 0, cv.BORDER_DEFAULT);
@@ -290,41 +307,39 @@ function main(){
             cv.circle(dst, adjCenter, pupil.radius, [0, 255, 0, a]);
         }
     }
-    // UNUSED, NON-WORKING
-    // function detectPupilsContours(mat, eyeRect){
-    //     // detect pupils using contours
-    //     if (!eyeRect) throw "missing Rect";
-    //     if (!mat) throw "missing Mat";
-    //     for (var threshold = 0; threshold <= 255; threshold++) {
-    //         // Convert to binary image by thresholding it
-    //         // cv.threshold(mat, candidate, threshold, 255, cv.THRESH_BINARY);
-    //         cv.threshold(mat, candidate, 70, 255, cv.THRESH_BINARY);
-    //         cv.findContours(candidate, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_NONE);
-    //         var color = new cv.Scalar(0,255,0);
-    //         cv.drawContours(dst, contours, 0, color, 1, cv.LINE_8, hierarchy, 0);
-    //         for (var i = 0; i < contours.size(); i++) {
-    //             var area = cv.contourArea(contours.get(i));
-    //             var rect = cv.boundingRect(contours.get(i));
-    //             var radius = rect.width / 2;
-    
-    //             var sizeRate = rect.width / eye.cols;
-    
-    //             // If contour: has round shape and has a specific size relation
-    //             // Then it is the pupil
-    //             if (sizeRate >= 0.01 && sizeRate <= 0.41 &&
-    //                 Math.abs(1 - (rect.width / rect.height)) <= 0.2 &&
-    //                 Math.abs(1 - (area / (Math.PI * Math.pow(radius, 2)))) <= 0.2)
-    //             {
-    //                 // draw
-    //                 var x = eyeRect.x + rect.x;
-    //                 var y = eyeRect.y + rect.y;
-    //                 var point1 = new cv.Point(x, y);
-    //                 var point2 = new cv.Point(x + rect.width, y + rect.height);
-    //                 cv.rectangle(dst, point1, point2, [0, 255, 0, 255]);
-    //             }
-    //         }
-    //     }
-    // }
+    function detectPupilsContours(eyeMat){
+        // detect pupils using circle finding
+        if (!eyeMat) throw "missing Mat";
+
+        cv.adaptiveThreshold(eyeMat, eyeCandidate, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, 71, 100);
+        var blur_amount = 13;
+        cv.GaussianBlur(eyeCandidate, eyeCandidate, new cv.Size(blur_amount, blur_amount), 0, 0, cv.BORDER_DEFAULT);
+        cv.threshold(eyeCandidate, eyeCandidate, 0, 255, cv.THRESH_BINARY || cv.THRESH_OTSU);
+
+        cv.findContours(eyeCandidate, pupilContours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_NONE);
+        cv.drawContours(dst, pupilContours, 0, [255,255,255,255], 1, cv.LINE_8, hierarchy, 0);
+
+        var outRectV = new cv.RectVector();
+
+        for (var i = 0; i < pupilContours.size(); i++) {
+            var area = cv.contourArea(pupilContours.get(i));
+            var rect = cv.boundingRect(pupilContours.get(i));
+            var radius = rect.width / 2;
+
+            var sizeRate = rect.width / eyeMat.cols;
+
+            // If contour: has round shape and has a specific size relation
+            // Then it is the pupil
+            if (sizeRate >= 0.3 && sizeRate <= 0.9 // Size check
+                && Math.abs(1 - (rect.width / rect.height)) <= 0.5 // Square dimentions check
+                && Math.abs(1 - (area / (Math.PI * Math.pow(radius, 2)))) <= 0.7 // Round shape check
+            ){
+                outRectV.push_back(rect);
+            }
+        }
+        return outRectV;
+        
+    }
     function detectMouths(faceMat, outRectV){
         // detect eyes
         if (!faceMat) throw "missing Mat";
@@ -346,10 +361,6 @@ function main(){
         }
     }
 
-    function estimateHeadPose(){
-        // TODO
-    }
-
     function stabilizeRect(rect, name, samples, parentRect){
         if (!name) throw "missing name";
         if (!samples) throw "missing sample limit";
@@ -362,7 +373,7 @@ function main(){
         if (rect){
             stabilizeCache[name].push(rect);
         }else{
-            // stabilizeCache[name] = [];
+            stabilizeCache[name].shift();
         }
         var points = stabilizeCache[name];
         if (points.length > 0){
@@ -397,6 +408,36 @@ function main(){
         return new cv.Rect(sumX, sumY, sumW, sumH);
     }
 
+    function persistRect(rect, name, samples, parentRect){
+        //uses the stabilizeCache to prevent flickering, provides no smoothing.
+        //unused, can swap stabilizeRect out for persistRect if desired.
+        if (!name) throw "missing name";
+
+        if (!stabilizeCache[name]){ 
+            stabilizeCache[name] = [];
+        }else if(stabilizeCache[name].length >= samples){
+            stabilizeCache[name].pop();
+        }
+        if (rect){
+            stabilizeCache[name].unshift(rect);
+            return rect;
+        }else{
+            if (stabilizeCache[name][0]){
+                return stabilizeCache[name][0];
+            }else{
+                return rect;
+            }
+        }
+    }
+
+    function stabilizeAndSet(rectV, name, index, samples, parentRect){
+        if (!index) index = 0;
+        var rect = rectV.get(index);
+        rect = stabilizeRect(rect, name + index, samples, parentRect);
+        if (rect) rectV.set(index, rect);
+        return rect;
+    }
+
     function flipRectV(inRectV, parentMat){
         for(var i = 0; i < inRectV.size(); i++)
         {
@@ -417,23 +458,6 @@ function main(){
         m.delete();
     }
 
-    // UNUSED, NON-WORKING
-    // function cropRectIfOutOfBounds(childRect, parentRect){
-    //     if (childRect && parentRect){
-    //         // prevent out of bounds errors during roi by cropping region in
-    //         var outRect = new cv.Rect(childRect.x, childRect.y, childRect.width, childRect.height);
-
-    //         if (childRect.x + childRect.width > parentRect.width){
-    //             outRect.width -= (childRect.x + childRect.width) - parentRect.width;
-    //         }
-    //         if (childRect.y + childRect.height > parentRect.height){
-    //             outRect.height -= (childRect.y + childRect.width) - parentRect.height;
-    //         }
-    //         return outRect;
-    //     }
-    //     return childRect;
-    // }
-
     function parseHoughCircles(inMat){
         var circles = [];
         for (var i = 0; i < inMat.cols; ++i) {
@@ -441,10 +465,25 @@ function main(){
             var y = inMat.data32F[i * 3 + 1];
             var radius = inMat.data32F[i * 3 + 2];
             var center = new cv.Point(x, y);
-            // cv.circle(dst, center, radius, [0, 255, 0, 255]);
             circles.push({ radius: radius, center: center });
         }
         return circles;
+    }
+
+    function rectVToParsedCircles(inRectV){
+        var circles = [];
+        for (var i = 0; i < inRectV.size(); i++){
+            var rect = inRectV.get(i);
+            circles.push(rectToParsedCircle(rect));
+        }
+        return circles;
+    }
+    function rectToParsedCircle(inRect){
+        var radius = inRect.width / 2;
+        var x = inRect.x + inRect.width / 2;
+        var y = inRect.y + inRect.height / 2;
+        var center = new cv.Point(x, y);
+        return { radius: radius, center: center };
     }
 
     function parseFacePositions(video, faceRect, faceRectR, faceRectL, faceRectLower, eyeRectL, eyeRectR, pupilR, pupilL, mouthRect){
@@ -461,7 +500,7 @@ function main(){
         }
         if (faceRect){
             output.face = {};
-            output.face.translate = findRelativeTranslation(video, findRectMiddle(faceRect));
+            output.face.translate = findRelativeTranslation(video, findRectMiddle(faceRect), true);
             output.face.rotate = {};
 
             if (eyeRectR || eyeRectL){
@@ -499,13 +538,19 @@ function main(){
         return {
             x: rect.x + rect.width / 2,
             y: rect.y + rect.height / 2,
+            width: rect.width,
+            height: rect.height,
         }
         
     }
-    function findRelativeTranslation(parentRect, childRect){
+    function findRelativeTranslation(parentRect, childRect, enableZ){
         var outRect = {}
         outRect.x = mapScale(childRect.x, 0, parentRect.width, -parentRect.width / 2, parentRect.width / 2);
         outRect.y = mapScale(childRect.y, 0, parentRect.height, -parentRect.height / 2, parentRect.height / 2);
+        if (enableZ){
+            //rough approximation, work in progress
+            outRect.z = mapScale((parentRect.width - childRect.width), parentRect.width, 0, -parentRect.width / 2, parentRect.width / 2);
+        }
         return outRect;
     }
     function mapScale(num, in_min, in_max, out_min, out_max){
@@ -514,10 +559,7 @@ function main(){
 
     function findAngleBetween(pointA, pointB, offset){
         offset = (offset)? offset : 0;
-        // return {
-        //     deg: ((Math.atan2(pointA.y - pointB.y, pointA.x - pointB.x) - offset) * 180 / Math.PI),
-        //     rad: ((Math.atan2(pointA.y - pointB.y, pointA.x - pointB.x) - offset)),
-        // }
+        //radians, d = (r * 180 / Math.PI)
         return (Math.atan2(pointA.y - pointB.y, pointA.x - pointB.x) - offset);
     }
 
